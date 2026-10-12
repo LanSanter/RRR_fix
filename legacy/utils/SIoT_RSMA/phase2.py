@@ -1,7 +1,7 @@
 import numpy as np
 from input_settings import SIoT
 from phase1 import phase1
-from config import rate_mapping
+from config import AWGNoise, config, payload_per_hz, rate_mapping, required_bandwidth
 
 
 
@@ -378,10 +378,10 @@ def compute_collaborative_required_bandwidth(collaborative_group, T_threshold):
     T_rest=(len(collaborative_group) * T_threshold) - T_comp - T_d2d - ((sum(len(siot.locations) * 0.2 for siot in collaborative_group) / representative_siot.cpu_frequency))
     
     #Representative SIoT data rate
-    R_representative_siot = (len(set.union(*[set(siot.locations) for siot in collaborative_group])) * 0.2) / T_rest
-    gamma_representative_siot= (abs(representative_siot.gain) ** 2 * representative_siot.power) / 1e-18
+    representative_bits = len(set.union(*(set(siot.locations) for siot in collaborative_group))) * 0.2 * config['feature_bits']
+    gamma_representative_siot= (abs(representative_siot.gain) ** 2 * representative_siot.power) / AWGNoise
     
-    B_u_c=R_representative_siot/ rate_mapping(gamma_representative_siot)
+    B_u_c = required_bandwidth(payload_per_hz(representative_bits, rate_mapping(gamma_representative_siot)), T_rest)
     
     print(f"Bandwidth:{B_u_c}")
     return B_u_c

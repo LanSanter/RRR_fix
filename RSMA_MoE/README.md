@@ -8,7 +8,7 @@
 python main.py
 ```
 
-主要參數集中在 `config.py` 的 `ExperimentConfig`。
+主要參數集中在 `config.py` 的 `ExperimentConfig`。物理層單位、修復對照與測試方式見 [PHYSICAL_LAYER_FIXES.md](PHYSICAL_LAYER_FIXES.md)。
 
 ## 程式結構
 
@@ -99,13 +99,13 @@ Baseline 不是 random expert。Baseline 的 expert 仍照 Top-K 或 WDMoE 選�
 
 | 參數 | 目前值 | 說明 |
 |---|---:|---|
-| `num_antennas` | `4` | server antenna 數量，channel model 仍是 SIoT-like scalar gain。 |
+| `num_antennas` | `1` | antenna metadata；目前使用 scalar amplitude channel。 |
 | `wavelength` | `0.125` | DB phase term 使用的波長。 |
-| `noise_power` | `1e-18` | SINR noise power。 |
+| `noise_power` | `3.9810717e-21` W/Hz | −174 dBm/Hz 的 noise PSD。 |
 | `common_power_ratio` | `0.6` | IoT power 中 common stream 比例。 |
-| `max_device_power` | `1.2589e-3` | IoT device power。 |
+| `max_device_power` | `1.2589254e-3` W/Hz | 1 dBm/Hz 的 transmit PSD，非總功率。 |
 | `max_group_size` | `4` | 每個 IoT group 最多 device 數。 |
-| `min_rate` | `1.0` | C7 minimum common/private rate。 |
+| `min_rate` | `0.4e6` bit/s | C7 minimum aggregate common + private rate。 |
 
 ### Performance Loss
 
@@ -210,11 +210,12 @@ L(P_sel, v_j^i) <= q_hat_j^i
 每個 group 只計一次 bandwidth：
 
 ```text
-B_g = common_volume / (T_g * common_efficiency)
-      + sum_n private_volume_n / (T_g * private_efficiency_n)
+B_g = max(common_volume / (T_g * common_efficiency),
+          max_n private_volume_n / (T_g * private_efficiency_n),
+          max_n R_min / (common_efficiency + private_efficiency_n))
 ```
 
-`T_g` 由依賴該 group 的 subtasks 中最緊的 remaining time 決定。為符合 minimum data-rate constraint，實作也會讓 `B_g` 不低於每條 active common/private stream 達到 `R_min` 所需的 bandwidth。
+`T_g` 由依賴該 group 的 subtasks 中最緊的 remaining time 決定。為符合 minimum data-rate constraint，實作也會讓 `B_g` 不低於每個 device 的 common + private aggregate rate 達到 `R_min` 所需的 bandwidth。
 
 common stream 使用 distributed beamforming gain：
 
@@ -222,7 +223,7 @@ common stream 使用 distributed beamforming gain：
 R_common = B_g * log2(1 + DB_gain(g) * common_signal / (private_interference + noise))
 ```
 
-private stream 使用 PDF System Model 的 scalar channel gain interference：
+private stream 使用 scalar amplitude channel，signal/interference/noise 均為 W/Hz：
 
 ```text
 R_private,n = B_g * log2(1 + private_signal_n / (sum_{m != n} private_interference_m + noise))

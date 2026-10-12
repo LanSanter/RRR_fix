@@ -9,6 +9,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import networkx as nx
 
+from physical_layer import TX_PSD_W_PER_HZ
+
 
 
 def feature_name(feature_index: int | str) -> str:
@@ -562,19 +564,22 @@ def channel_from_distance(
     num_antennas: int,
     rng: random.Random,
 ) -> tuple[list[complex], float, float]:
-    """SIoT-RSMA scalar channel gain for one IoT-server link.
+    """Return scalar channel amplitude and fading phase for one link.
 
-    The SIoT code draws link distances in [10, 300] m and computes
-    |h| = |small-scale fading| / (path loss * shadowing). We keep the server
-    antenna count as experiment metadata, but this channel model is scalar.
+    PL(d) = 50 + 15 log10(d) dB, with a 10 m reference-distance floor.
+    Shadowing is a power loss in dB; CN(0,1) fading has unit mean power.
+    num_antennas remains metadata: this is not a MIMO channel model.
     """
     del num_antennas
-    siot_distance = min(max(distance, 10.0), 300.0)
-    path_loss_db = 50.0 + 15.0 * math.log10(siot_distance)
-    loss = 10 ** (path_loss_db / 10.0)
-    shadowing = 10 ** (rng.gauss(0.0, 1.0) / 10.0)
-    small_scale_fading = complex(rng.gauss(0.0, 1.0), rng.gauss(0.0, 1.0))
-    channel_gain = abs(small_scale_fading) / (loss * shadowing)
+    if not math.isfinite(distance) or distance < 0.0:
+        raise ValueError("distance must be finite and non-negative.")
+    link_distance = max(distance, 10.0)
+    path_loss_db = 50.0 + 15.0 * math.log10(link_distance)
+    shadowing_db = rng.gauss(0.0, 1.0)
+    power_loss = 10.0 ** ((path_loss_db + shadowing_db) / 10.0)
+    fading_std = 1.0 / math.sqrt(2.0)
+    small_scale_fading = complex(rng.gauss(0.0, fading_std), rng.gauss(0.0, fading_std))
+    channel_gain = abs(small_scale_fading) / math.sqrt(power_loss)
     channel_phase = math.atan2(small_scale_fading.imag, small_scale_fading.real)
     return [], channel_gain, channel_phase
 
@@ -709,11 +714,11 @@ def build_simple_devices(
     cell_radius: float,
     num_antennas: int,
     rng: random.Random,
-    max_power: float = 50.0,
+    max_power: float = TX_PSD_W_PER_HZ,
     server_feature_overlap_ratio: float = 0.25,
     global_random_feature_fraction: float = 0.15,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Create IoT devices with multi-cell associations and original-like channels."""
+    """Create IoT devices with scalar amplitude channels and max_power in W/Hz."""
     if num_iot_features < 1:
         raise ValueError("num_iot_features must be at least 1.")
     if num_iot_devices < 1:
@@ -864,8 +869,10 @@ def build_simple_devices(
         "area_size": area_size,
         "cell_radius": cell_radius,
         "num_antennas": num_antennas,
-        "channel_model": "siot_scalar_pathloss_shadowing_fading",
-        "distance_model": "geometry_based_link_distance_clamped_to_siot_10_300m",
+        "channel_model": "scalar_unit_power_fading_sqrt_power_loss",
+        "channel_gain_unit": "amplitude (squared for received power)",
+        "device_power_unit": "W/Hz",
+        "distance_model": "geometry_based_link_distance_with_10m_floor",
         "angle_model": "geometry_based_counterclockwise_from_server_horizontal_axis",
         "feature_model": "server_pool_position_correlated_with_global_randomness",
         "feature_model_parameters": {
@@ -922,7 +929,7 @@ def build_scheduler_inputs(
     wired_extra_link_probability: float = 0.05,
     wired_edge_weight_range: tuple[float, float] = (1.0, 3.0),
     default_feature_bits: float = 12000.0,
-    max_device_power: float = 1.2589e-3,
+    max_device_power: float = TX_PSD_W_PER_HZ,
     area_size: float = 1000.0,
     cell_radius: float = 300.0,
     num_antennas: int = 4,

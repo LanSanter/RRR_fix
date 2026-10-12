@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from physical_layer import NOISE_PSD_W_PER_HZ, TX_PSD_W_PER_HZ
 from generate_dags import DAGSpec
 
 
@@ -148,10 +149,10 @@ class ExperimentConfig:
         16.0 * 1024.0 * 8.0,
     )
     # Paper PSDs, converted from dBm/Hz to W/Hz.
-    noise_power: float = 10.0 ** ((-174.0 - 30.0) / 10.0)
+    noise_power: float = NOISE_PSD_W_PER_HZ
     common_power_ratio: float = 0.6
     # Kept under the existing field name for compatibility; interpreted as PSD.
-    max_device_power: float = 10.0 ** ((1.0 - 30.0) / 10.0)
+    max_device_power: float = TX_PSD_W_PER_HZ
     max_group_size: int = 4
     min_rate: float = 0.4e6
 

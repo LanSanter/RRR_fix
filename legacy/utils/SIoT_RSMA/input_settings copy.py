@@ -10,43 +10,6 @@ from random import randint
 #from options import args_parser
 
 
-# class channel:
-#     def __init__(self, radius=300):
-#         self.distance = np.random.uniform(10, radius)
-#         noise = 3.98e-21
-#         self.locations = np.random.choice(list(L_universal), size=np.random.randint(2, 6), replace=False).tolist()
-#         self.angle = np.random.uniform(0, 360)  # Phase angle in degrees
-
-
-#     def path_loss(self, distance):
-#         """路徑損耗模型"""
-#         # PL = 128.1 + 37.6 * math.log10(distance)  # 根據提供的路徑損耗公式計算dB (太大)
-#         PL = 50 + 15 * math.log10(distance)  # 根據提供的路徑損耗公式計算dB
-#         return PL
-    
-#     def shadow(self):
-#         """產生陰影效應，使用高斯分佈"""
-#         shadowing_dB = np.random.normal(0, 1)  # 平均為0，標準差為8 dB
-#         return shadowing_dB
-    
-#     def channel_gain(self, distance):
-#         """計算信道增益"""
-#         # Pass loss in Watt
-#         PL_k = 10 ** (50 + 15 * math.log10(distance) / 10)  # 轉換為線性單位
-
-#         # Shadowing in Watt
-#         shadowing = 10 ** (np.random.normal(0, 1) / 10)
-
-#         # Total loss cause by path loss and shadowing
-#         loss = 10 ** (50 + 15 * math.log10(distance) / 10) * 10 ** (np.random.normal(0, 1) / 10)
-
-#         # 計算小尺度衰落（複數高斯分佈）
-#         g_k = np.random.normal(0, 1) + 1j * np.random.normal(0, 1)
-#         # 計算信道增益
-#         h_k = g_k / loss
-#         return h_k
-
-        
 class SIoT:
     def __init__(self, index, universal_locations=None, uncovered_locations=None):
         self.index = index
@@ -109,9 +72,9 @@ class SIoT:
         shadowing_db = np.random.normal(0, 1)  # 陰影衰落
         shadowing = 10 ** (shadowing_db / 10)
 
-        small_scale_fading = np.random.normal(0, 1) + 1j * np.random.normal(0, 1)  # 小尺度衰落
+        small_scale_fading = (np.random.normal(0, 1) + 1j * np.random.normal(0, 1)) / np.sqrt(2.0)  # CN(0,1)
         
-        h_k = np.abs(small_scale_fading) / (loss * shadowing)
+        h_k = np.abs(small_scale_fading) / np.sqrt(loss * shadowing)  # Amplitude
 
         return h_k
 
