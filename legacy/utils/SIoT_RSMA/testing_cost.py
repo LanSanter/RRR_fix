@@ -1,7 +1,7 @@
 import numpy as np
 from phase2 import find_longest_path
 from phase3 import phase3, compute_common_message_ratio, distributed_beamforming_gain, compute_private_rate_group
-from config import rate_mapping
+from config import AWGNoise, config, payload_per_hz, power_split, rate_mapping, required_bandwidth
 
 
 def main():
@@ -72,70 +72,48 @@ def compute_collaborative_cost(collaborative_group, bandwidth_cost_unit, eta):
     return total_cost
 
 def compute_rsma_required_bandwidth(rsma_group, T_threshold):
-    """
-    計算該 rsma group 需要的 Bandwidth.
-    """   
+    """Bandwidth in Hz; PSD SINRs are independent of allocated bandwidth."""
     if not rsma_group:
         return 0
     if len(rsma_group) == 1:
-        B_g = compute_single_required_bandwidth(rsma_group, T_threshold)  # 獨立計算單個 SIoT 的 bandwidth
-        print(f"Single SIoT Bandwidth: {B_g}")  # 確保值是合理的
-        return B_g
-    # **1. 計算計算時間 (Computation Time)**
+        bandwidth = compute_single_required_bandwidth(rsma_group, T_threshold)
+        return bandwidth
+
     total_locations = len(set.union(*(set(siot.locations) for siot in rsma_group)))
-    mec_cpu = 1  # 總 CPU 頻率
-    T_comp = total_locations / mec_cpu if mec_cpu > 0 else float('inf')
-    #print(f"T_comp:{T_comp}")
-        
-    #剩餘時間 給傳輸時間
-    T_rest=(len(rsma_group) * T_threshold) - T_comp
-    #print(f"T_rest:{T_rest}")  
-    common_message_ratio, common_locations= compute_common_message_ratio(rsma_group)
-  
-    #Common SINR
-    common_numerator = sum(abs(siot.gain)**2 * (common_message_ratio*siot.power) for siot in rsma_group)
-    common_denominator = sum(abs(siot.gain)**2 * ((1-common_message_ratio)*siot.power) for siot in rsma_group) + 1e-18
-    common_sinr= common_numerator / common_denominator if common_denominator > 0 else float('inf') # 避免分母為 0
-    beamforming_gain=distributed_beamforming_gain(rsma_group,common_message_ratio)
-    #Common data rate
-    #common_rate= np.log2(1 + beamforming_gain * common_sinr)
-    common_rate=rate_mapping(beamforming_gain * common_sinr)
+    mec_cpu = 1
+    time_budget = len(rsma_group) * T_threshold - total_locations / mec_cpu
+    common_message_ratio, common_locations = compute_common_message_ratio(rsma_group)
+    common_fraction, private_fraction = power_split()
+    common_signal = sum(abs(siot.gain)**2 * common_fraction * siot.power for siot in rsma_group)
+    private_interference = sum(abs(siot.gain)**2 * private_fraction * siot.power for siot in rsma_group)
+    common_sinr = common_signal / (private_interference + AWGNoise)
+    beamforming_gain = distributed_beamforming_gain(rsma_group, common_message_ratio)
+    common_efficiency = rate_mapping(beamforming_gain * common_sinr)
+    private_efficiencies = compute_private_rate_group(rsma_group, common_message_ratio)
 
-    #Private SINR data rate
-    private_rate_dict=compute_private_rate_group(rsma_group, common_message_ratio)
+    # Location counts determine payload, never the stream power split.
+    common_message_data_size = len(common_locations) * config['feature_bits']
+    common_payload = payload_per_hz(common_message_data_size, common_efficiency)
+    private_payload = max(
+        (payload_per_hz(
+            len(set(siot.locations) - common_locations) * config['feature_bits'],
+            private_efficiencies[siot.index],
+        ) for siot in rsma_group),
+        default=0.0,
+    )
+    bandwidth = required_bandwidth(max(common_payload, private_payload), time_budget)
+    return bandwidth
 
-    common_message_data_size=common_message_ratio*total_locations
-    private_message_data_size = {siot.index: len(set(siot.locations) - common_locations) for siot in rsma_group }  # 計算每個 SIoT 的私有訊息
-        
-    # 計算公用訊息的延遲
-    common_uplink_time = common_message_data_size / common_rate if common_rate > 0 else float('inf')
-    print(f"common_uplink_time:{common_uplink_time},  common rate:{common_rate}, common sinr:{common_sinr}")
-
-    # 計算私有訊息的延遲 (對所有 SIoT 取最大值)
-    private_uplink_time = [private_message_data_size[siot.index] / private_rate_dict[siot.index] if private_rate_dict.get(siot.index, 0) > 0 else float('inf')for siot in rsma_group]
-    print(f"private_uplink_time: {private_uplink_time}")
-
-    # 取最大值作為最終的上行延遲
-    total_uplink_delay = max(common_uplink_time, max(private_uplink_time)) if private_uplink_time else common_uplink_time
-    B_g = total_uplink_delay/T_rest
-     
-    print(f"Bandwidth:{B_g}")
-    return B_g
 
 def compute_single_required_bandwidth(rsma_group, T_threshold):
+    """Single-device uplink using the full transmit PSD, returning Hz."""
+    if not rsma_group:
+        return 0.0
     total_locations = len(set.union(*(set(siot.locations) for siot in rsma_group)))
-    mec_cpu = 2  # 總 CPU 頻率
-    T_comp = total_locations / mec_cpu if mec_cpu > 0 else float('inf')
-    print(f"T_comp:{T_comp}")
-    T_rest=(len(rsma_group) * T_threshold) - T_comp
-    print(f"T_rest:{T_rest}")
-
-    #SIoT data rate
-    siot_rate = total_locations / T_rest
-    gamma_siot = sum((abs(siot.gain) ** 2 * siot.power) / 1e-18 for siot in rsma_group)
-    data_rate=rate_mapping(gamma_siot)
-    B_g=siot_rate/ data_rate
-    return B_g
+    time_budget = len(rsma_group) * T_threshold - total_locations / 2.0
+    snr = sum(abs(siot.gain)**2 * siot.power for siot in rsma_group) / AWGNoise
+    payload = payload_per_hz(total_locations * config['feature_bits'], rate_mapping(snr))
+    return required_bandwidth(payload, time_budget)
 
 def compute_collaborative_required_bandwidth(collaborative_group, T_threshold):
     """
@@ -169,10 +147,10 @@ def compute_collaborative_required_bandwidth(collaborative_group, T_threshold):
     T_rest=(len(collaborative_group) * T_threshold) - T_comp - T_d2d - ((sum(len(siot.locations) * 0.2 for siot in collaborative_group) / representative_siot.cpu_frequency))
     
     #Representative SIoT data rate
-    R_representative_siot = (len(set.union(*[set(siot.locations) for siot in collaborative_group])) * 0.2) / T_rest
-    gamma_representative_siot= (abs(representative_siot.gain) ** 2 * representative_siot.power) / 1e-18
+    representative_bits = len(set.union(*(set(siot.locations) for siot in collaborative_group))) * 0.2 * config['feature_bits']
+    gamma_representative_siot= (abs(representative_siot.gain) ** 2 * representative_siot.power) / AWGNoise
     
-    B_u_c=R_representative_siot/ np.log2(1 + gamma_representative_siot)
+    B_u_c = required_bandwidth(payload_per_hz(representative_bits, rate_mapping(gamma_representative_siot)), T_rest)
     
     #print(f"Bandwidth:{B_u_c}")
     return B_u_c

@@ -1,7 +1,7 @@
 import numpy as np
 from itertools import combinations
 from phase2 import phase2, check_distributed_beamforming_constraint, compute_collaborative_cost
-from config import rate_mapping
+from config import AWGNoise, config, payload_per_hz, power_split, rate_mapping, required_bandwidth
 
 def give_rsma_collaborative_groups(rsma_groups, collaborative_groups):
     return rsma_groups, collaborative_groups
@@ -201,71 +201,48 @@ def compute_RSMA_cost(rsma_group, bandwidth_cost_unit, mec_cost_unit):
     return total_cost, C_bw, C_comp,coverage,common_message_data_size,beamforming_gain
 
 def compute_rsma_required_bandwidth(rsma_group, T_threshold):
-    """
-    計算該 rsma group 需要的 Bandwidth.
-    """   
+    """Bandwidth in Hz; PSD SINRs are independent of allocated bandwidth."""
     if not rsma_group:
         return 0, 0, 0, 0
     if len(rsma_group) == 1:
-        B_g = compute_single_required_bandwidth(rsma_group, T_threshold)  # 獨立計算單個 SIoT 的 bandwidth
-        #print(f"Single SIoT Bandwidth: {B_g}")  # 確保值是合理的
-        return B_g, 0, 0, 1
-    # **1. 計算計算時間 (Computation Time)**
+        bandwidth = compute_single_required_bandwidth(rsma_group, T_threshold)
+        return bandwidth, 0, 0, 1
+
     total_locations = len(set.union(*(set(siot.locations) for siot in rsma_group)))
-    mec_cpu = 2  # 總 CPU 頻率
-    T_comp = total_locations / mec_cpu if mec_cpu > 0 else float('inf')
-    print(f"T_comp:{T_comp}")
-        
-    #剩餘時間 給傳輸時間
-    T_rest=(len(rsma_group) * T_threshold) - T_comp
-    print(f"T_rest:{T_rest}")  
-    common_message_ratio, common_locations= compute_common_message_ratio(rsma_group)
-    #Common SINR
-    common_numerator = sum(abs(siot.gain)**2 * (common_message_ratio*siot.power) for siot in rsma_group)
-    common_denominator = sum(abs(siot.gain)**2 * ((1-common_message_ratio)*siot.power) for siot in rsma_group) + 1e-18
-    common_sinr= common_numerator / common_denominator if common_denominator > 0 else float('inf') # 避免分母為 0
-    beamforming_gain=distributed_beamforming_gain(rsma_group,common_message_ratio)
-    #Common data rate
-    common_rate= rate_mapping( beamforming_gain * common_sinr)
+    mec_cpu = 2
+    time_budget = len(rsma_group) * T_threshold - total_locations / mec_cpu
+    common_message_ratio, common_locations = compute_common_message_ratio(rsma_group)
+    common_fraction, private_fraction = power_split()
+    common_signal = sum(abs(siot.gain)**2 * common_fraction * siot.power for siot in rsma_group)
+    private_interference = sum(abs(siot.gain)**2 * private_fraction * siot.power for siot in rsma_group)
+    common_sinr = common_signal / (private_interference + AWGNoise)
+    beamforming_gain = distributed_beamforming_gain(rsma_group, common_message_ratio)
+    common_efficiency = rate_mapping(beamforming_gain * common_sinr)
+    private_efficiencies = compute_private_rate_group(rsma_group, common_message_ratio)
 
-    #Private SINR data rate
-    private_rate_dict=compute_private_rate_group(rsma_group, common_message_ratio)
+    # Location counts determine payload, never the stream power split.
+    common_message_data_size = len(common_locations) * config['feature_bits']
+    common_payload = payload_per_hz(common_message_data_size, common_efficiency)
+    private_payload = max(
+        (payload_per_hz(
+            len(set(siot.locations) - common_locations) * config['feature_bits'],
+            private_efficiencies[siot.index],
+        ) for siot in rsma_group),
+        default=0.0,
+    )
+    bandwidth = required_bandwidth(max(common_payload, private_payload), time_budget)
+    return bandwidth, common_message_ratio, common_message_data_size, beamforming_gain
 
-    common_message_data_size=common_message_ratio*total_locations
-    private_message_data_size = {siot.index: len(set(siot.locations) - common_locations) for siot in rsma_group }  # 計算每個 SIoT 的私有訊息
-        
-    # 計算公用訊息的延遲
-    common_uplink_time = common_message_data_size / common_rate if common_rate > 0 else float('inf')
-    print(f"common_uplink_time:{common_uplink_time}, common message data size:{common_message_data_size}, common rate:{common_rate}")
-
-    # 計算私有訊息的延遲 (對所有 SIoT 取最大值)
-    private_uplink_time = [private_message_data_size[siot.index] / private_rate_dict[siot.index] if private_rate_dict.get(siot.index, 0) > 0 else float('inf')for siot in rsma_group]
-    print(f"private_uplink_time: {private_uplink_time}")
-
-    # 取最大值作為最終的上行延遲
-    total_uplink_delay = max(common_uplink_time, max(private_uplink_time)) if private_uplink_time else common_uplink_time
-    B_g = total_uplink_delay/T_rest
-     
-    #print(f"Bandwidth:{B_g}")
-    return B_g,common_message_ratio,common_message_data_size,beamforming_gain
 
 def compute_single_required_bandwidth(rsma_group, T_threshold):
+    """Single-device uplink using the full transmit PSD, returning Hz."""
+    if not rsma_group:
+        return 0.0
     total_locations = len(set.union(*(set(siot.locations) for siot in rsma_group)))
-    mec_cpu = 2  # 總 CPU 頻率
-    T_comp = total_locations / mec_cpu if mec_cpu > 0 else float('inf')
-    print(f"T_comp:{T_comp}")
-    T_rest=(len(rsma_group) * T_threshold) - T_comp
-    print(f"T_rest:{T_rest}")
-
-    #SIoT data rate
-    siot_rate = total_locations / T_rest
-    gamma_siot = sum(((abs(siot.gain) ** 2 * siot.power)) for siot in rsma_group)
-    gamma_siot=gamma_siot/1e-18
-    print(f"single SINR:{gamma_siot}")
-
-    
-    B_g=siot_rate/ rate_mapping(gamma_siot)
-    return B_g
+    time_budget = len(rsma_group) * T_threshold - total_locations / 2.0
+    snr = sum(abs(siot.gain)**2 * siot.power for siot in rsma_group) / AWGNoise
+    payload = payload_per_hz(total_locations * config['feature_bits'], rate_mapping(snr))
+    return required_bandwidth(payload, time_budget)
 
 def compute_common_message_ratio(g_j):
     
@@ -289,6 +266,7 @@ def distributed_beamforming_gain(g_j, common_message_ratio):
     if not g_j:
         return False
     
+    common_fraction, _ = power_split()
     wavelength=0.125
     phase_terms = {siot.index: np.exp(1j * (2 * np.pi * siot.distance * np.cos(np.radians(siot.angle))) / wavelength) for siot in g_j}
     
@@ -296,11 +274,11 @@ def distributed_beamforming_gain(g_j, common_message_ratio):
 
     # 計算分子 (Numerator)
     numerator = sum(
-        np.sqrt(i.power * common_message_ratio) * abs(i.gain) * phase_terms[i.index] for i in g_j
+        np.sqrt(i.power * common_fraction) * abs(i.gain) * phase_terms[i.index] for i in g_j
     )
 
     # 計算分母 (Denominator)
-    denominator = sum(np.sqrt(i.power * common_message_ratio) * abs(i.gain) for i in g_j)
+    denominator = sum(np.sqrt(i.power * common_fraction) * abs(i.gain) for i in g_j)
 
     
     if denominator == 0:
@@ -320,13 +298,15 @@ def compute_private_rate_group(rsma_group, common_message_ratio):
     - noise_power (float): 熱噪聲功率 N_0
     
     返回：
-    - sinr_dict (dict): 每個 SIoT 的 Private SINR
+    - rate_dict (dict): 每個 SIoT 的 spectral efficiency (bit/s/Hz)
+    common_message_ratio is kept for API compatibility; power uses config.
     """
+    _, private_fraction = power_split()
     rate_dict = {}
     # **Step 1: 先計算分子 (訊號功率)**
     power_list = []
     for siot in rsma_group:
-        power_value = abs(siot.gain)**2 * ((1 - common_message_ratio) * siot.power)
+        power_value = abs(siot.gain)**2 * (private_fraction * siot.power)
         power_list.append((siot, power_value))
     
     # **Step 2: 按照分子值排序（大到小）**
@@ -334,8 +314,8 @@ def compute_private_rate_group(rsma_group, common_message_ratio):
 
     # **Step 3: 按照排序計算 SINR**
     for siot, _ in power_list:
-        numerator = abs(siot.gain)**2 * ((1 - common_message_ratio) * siot.power)
-        denominator = sum(abs(m.gain)**2 * ((1 - common_message_ratio) * m.power) for m in rsma_group if m != siot) + 1e-18  # 避免除零
+        numerator = abs(siot.gain)**2 * (private_fraction * siot.power)
+        denominator = sum(abs(m.gain)**2 * (private_fraction * m.power) for m in rsma_group if m != siot) + AWGNoise  # 避免除零
         private_sinr = numerator / denominator if denominator > 0 else float('inf')
 
         rate_dict[siot.index] = rate_mapping(private_sinr)  # 映射到對應的速率

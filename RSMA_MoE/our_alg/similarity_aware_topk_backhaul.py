@@ -21,6 +21,8 @@ from compared_method.hybrid_topk_location_aware_backhaul import (  # noqa: E402
 from our_alg.phase_1 import Phase1ServerExpertSelectionMixin  # noqa: E402
 from our_alg.phase_2 import Phase2GroupingBackhaulMixin  # noqa: E402
 from our_alg.phase_3 import Phase3RefinementPruningMixin  # noqa: E402
+from physical_layer import NOISE_PSD_W_PER_HZ, TX_PSD_W_PER_HZ
+
 from rsma_integration import build_scheduler_inputs  # noqa: E402
 from utils.formulation import FormulationConfig, FormulationEvaluator, SubtaskSpec, TaskSpec  # noqa: E402
 
@@ -236,9 +238,9 @@ def run_similarity_aware_topk_backhaul(
     c_fwd: float = 1.0,
     default_feature_bits: float = 12000.0,
     wavelength: float = 0.125,
-    noise_power: float = 1e-18,
+    noise_power: float = NOISE_PSD_W_PER_HZ,
     common_power_ratio: float = 0.6,
-    max_device_power: float = 1.2589e-3,
+    max_device_power: float = TX_PSD_W_PER_HZ,
     area_size: float = 1000.0,
     cell_radius: float = 300.0,
     num_antennas: int = 4,
@@ -344,8 +346,12 @@ def run_similarity_aware_topk_backhaul(
             "feature_bits_range": feature_bits_range,
             "wavelength": wavelength,
             "noise_power": noise_power,
+            "noise_power_unit": "W/Hz",
             "common_power_ratio": common_power_ratio,
             "max_device_power": max_device_power,
+            "max_device_power_unit": "W/Hz",
+            "rate_model": "Shannon (linear SINR)",
+            "spectral_efficiency_unit": "bit/s/Hz",
             "area_size": area_size,
             "cell_radius": cell_radius,
             "num_antennas": num_antennas,

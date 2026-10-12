@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from math import ceil, cos, log2, pi
+from math import ceil, cos, isfinite, pi
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+
+
+from physical_layer import NOISE_PSD_W_PER_HZ, TX_PSD_W_PER_HZ, spectral_efficiency
 
 
 ServerId = str
@@ -17,7 +20,7 @@ FeatureSource = Tuple[ServerId, GroupId]
 
 
 class InfeasibleBandwidthBudget(ValueError):
-    """Raised when no positive uplink time remains for an RSMA group."""
+    """Raised when an RSMA demand cannot meet its uplink time/rate budget."""
 
 
 @dataclass(frozen=True)
@@ -51,7 +54,7 @@ class DeviceSpec:
     spatial_correlation: Dict[ServerId, Dict[DeviceId, float]] = field(default_factory=dict)
     phase_angle: Dict[ServerId, float] = field(default_factory=dict)
     distance: Dict[ServerId, float] = field(default_factory=dict)
-    max_power: float = 1.0
+    max_power: float = TX_PSD_W_PER_HZ  # W/Hz
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,7 @@ class GroupSpec:
     devices: Tuple[DeviceId, ...]
     bandwidth: float
     required_features: Set[str] = field(default_factory=set)
+    # Per-stream transmit PSD overrides, in W/Hz.
     common_power: Dict[DeviceId, float] = field(default_factory=dict)
     private_power: Dict[DeviceId, float] = field(default_factory=dict)
 
@@ -97,9 +101,9 @@ class FormulationConfig:
     c_inf: Optional[float] = None
     derive_bandwidth: bool = True
     default_channel_gain: float = 1.0
-    default_power: float = 1.0
+    default_power: float = TX_PSD_W_PER_HZ  # W/Hz
     common_power_ratio: float = 0.6
-    noise_power: float = 1e-18
+    noise_power: float = NOISE_PSD_W_PER_HZ  # W/Hz; legacy field name
     wavelength: float = 0.125
     max_group_size: int = 4
     gssgd_beamforming_gain_threshold: float = 0.0
@@ -114,6 +118,12 @@ class FormulationConfig:
     min_selection_probability: float = 1e-12
     deadline_tolerance: float = 1e-3
     enforce_single_server_assignment: bool = True
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.noise_power) or self.noise_power <= 0.0:
+            raise ValueError("noise_power must be a positive, finite PSD in W/Hz.")
+        if not isfinite(self.common_power_ratio) or not 0.0 <= self.common_power_ratio <= 1.0:
+            raise ValueError("common_power_ratio must be in [0, 1].")
 
 
 @dataclass
@@ -276,7 +286,7 @@ def normalize_devices(devices: Iterable[Any]) -> Dict[DeviceId, DeviceSpec]:
             },
             phase_angle={str(k): float(v) for k, v in dict(data.get("phase_angle", {})).items()},
             distance={str(k): float(v) for k, v in dict(data.get("distance", data.get("distances", {}))).items()} if isinstance(data.get("distance", data.get("distances", {})), Mapping) else {},
-            max_power=float(_first(data, ("max_power", "power_budget"), 1.0)),
+            max_power=float(_first(data, ("max_power", "power_budget"), TX_PSD_W_PER_HZ)),
         )
     return normalized
 
@@ -715,6 +725,7 @@ class FormulationEvaluator:
         if not group.devices:
             return 0.0, {}
 
+        # Signal, interference, and noise are all PSDs (W/Hz).
         common_signal = sum(
             self.effective_channel_gain(device_id, group.server_id, group) ** 2
             * group.common_power.get(device_id, self.default_common_power(device_id))
@@ -727,7 +738,7 @@ class FormulationEvaluator:
         )
         db_gain = self.distributed_beamforming_gain(group)
         common_sinr = common_signal / (private_interference + self.config.noise_power)
-        common_efficiency = log2(1.0 + max(db_gain, 0.0) * max(common_sinr, 0.0))
+        common_efficiency = spectral_efficiency(max(db_gain, 0.0) * max(common_sinr, 0.0))
 
         private_efficiencies: Dict[DeviceId, float] = {}
         for device_id in group.devices:
@@ -742,7 +753,7 @@ class FormulationEvaluator:
                     * group.private_power.get(other_id, self.default_private_power(other_id))
                 )
             private_sinr = signal / (interference + self.config.noise_power)
-            private_efficiencies[device_id] = log2(1.0 + max(private_sinr, 0.0))
+            private_efficiencies[device_id] = spectral_efficiency(max(private_sinr, 0.0))
         return common_efficiency, private_efficiencies
 
     def derive_group_bandwidth(self, group: GroupSpec) -> float:
@@ -752,16 +763,25 @@ class FormulationEvaluator:
         if not group.devices:
             return 0.0
         budget = float(budget)
-        if budget <= 0.0:
+        if budget != budget or budget <= 0.0:
             raise InfeasibleBandwidthBudget(
                 f"RSMA group {group.server_id}:{group.id} has non-positive "
                 f"uplink time budget {budget:.6g}s"
             )
         common_efficiency, private_efficiencies = self.group_spectral_efficiencies(group)
+
+        def required(demand: float, efficiency: float) -> float:
+            if demand <= 0.0:
+                return 0.0
+            if efficiency <= 0.0:
+                raise InfeasibleBandwidthBudget(
+                    f"RSMA group {group.server_id}:{group.id} has positive "
+                    "demand on a zero-efficiency stream"
+                )
+            return demand / efficiency
+
         common_volume = self.group_common_volume(group)
-        common_required = common_volume / (
-            budget * max(common_efficiency, 1e-12)
-        )
+        common_required = required(common_volume, common_efficiency) / budget
 
         private_required = 0.0
         min_rate_required = 0.0
@@ -770,17 +790,12 @@ class FormulationEvaluator:
             private_efficiency = max(private_efficiencies.get(device_id, 0.0), 0.0)
             private_required = max(
                 private_required,
-                private_volume / (
-                    budget * max(private_efficiency, 1e-12)
-                ),
+                required(private_volume, private_efficiency) / budget,
             )
-            aggregate_efficiency = max(
-                common_efficiency + private_efficiency,
-                1e-12,
-            )
+            aggregate_efficiency = common_efficiency + private_efficiency
             min_rate_required = max(
                 min_rate_required,
-                self.config.min_rate / aggregate_efficiency,
+                required(self.config.min_rate, aggregate_efficiency),
             )
 
         return max(common_required, private_required, min_rate_required)

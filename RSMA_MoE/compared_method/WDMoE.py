@@ -24,6 +24,8 @@ from compared_method.hybrid_topk_location_aware_backhaul import (  # noqa: E402
     result_to_jsonable as hybrid_result_to_jsonable,
 )
 from compared_method.hybrid_topk_gssgd_backhaul import HybridTopKGSSGDBackhaulPipeline  # noqa: E402
+from physical_layer import NOISE_PSD_W_PER_HZ, TX_PSD_W_PER_HZ
+
 from rsma_integration import build_scheduler_inputs  # noqa: E402
 from utils.formulation import AssignmentKey, ExpertId, FormulationConfig, ServerId  # noqa: E402
 
@@ -580,9 +582,9 @@ def _run_wdmoe_pipeline(
     c_fwd: float = 1.0,
     default_feature_bits: float = 12000.0,
     wavelength: float = 0.125,
-    noise_power: float = 1e-18,
+    noise_power: float = NOISE_PSD_W_PER_HZ,
     common_power_ratio: float = 0.6,
-    max_device_power: float = 1.2589e-3,
+    max_device_power: float = TX_PSD_W_PER_HZ,
     area_size: float = 1000.0,
     cell_radius: float = 300.0,
     num_antennas: int = 4,
@@ -718,8 +720,12 @@ def _run_wdmoe_pipeline(
             "feature_bits_by_name": feature_bits_by_name,
             "wavelength": wavelength,
             "noise_power": noise_power,
+            "noise_power_unit": "W/Hz",
             "common_power_ratio": common_power_ratio,
             "max_device_power": max_device_power,
+            "max_device_power_unit": "W/Hz",
+            "rate_model": "Shannon (linear SINR)",
+            "spectral_efficiency_unit": "bit/s/Hz",
             "area_size": area_size,
             "cell_radius": cell_radius,
             "num_antennas": num_antennas,
